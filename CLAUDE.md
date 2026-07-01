@@ -37,7 +37,12 @@ python infer.py   # edit the `question` variable near the top of the file
 bash search_r1/search/build_index.sh
 ```
 
-There is **no test suite** in this repo (`pyproject.toml` lists `pytest` as an optional dep but nothing uses it, and there is no `tests/` directory). Don't invent test commands; validate changes by running the relevant script/server directly.
+```bash
+# Run tests (searchr1 env; pip install pytest first if not already present)
+python3 -m pytest tests/
+```
+
+`tests/` covers the `search_r1/llm_agent/` agent loop (action parsing, the `memory` action's context-purification and per-token loss-weighting logic) and the SE-Search dense reward (`verl/utils/reward_score/se_search.py`, `search_r1/llm_agent/atomic_query.py`) — all pure-function or mocked-actor/mocked-HTTP tests that run on CPU with no retriever server or GPU. There is **no coverage** of the actual PPO/GRPO training loop, veRL workers, or FSDP/vLLM/Ray plumbing — those require the real multi-GPU/retriever infra and can only be validated by running the training scripts directly (see Common commands above).
 
 Training is invoked as a Hydra app: `python3 -m verl.trainer.main_ppo <key.path>=<value> ...`. Config overrides are passed as `key.path=value` args (Hydra dot-notation), as seen throughout `train_ppo.sh`/`train_grpo.sh`. The base schema lives in `verl/trainer/config/ppo_trainer.yaml`.
 

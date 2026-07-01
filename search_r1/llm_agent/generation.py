@@ -91,10 +91,14 @@ class LLMGenerationManager:
         )['input_ids']
 
         if next_obs_ids.shape[1] > self.config.max_obs_length:
-            print(f"[WARNING] OBSERVATION TOO LONG, CONSIDER CHANGING YOUR CONFIG, {next_obs_ids.shape[1]} & {self.config.max_obs_length}")            
+            print(f"[WARNING] OBSERVATION TOO LONG, CONSIDER CHANGING YOUR CONFIG, {next_obs_ids.shape[1]} & {self.config.max_obs_length}")
             next_obs_ids = next_obs_ids[:, :self.config.max_obs_length]
 
-        return next_obs_ids
+        # When every observation this turn is the empty string (e.g. all active rows took
+        # a `memory` action), the tokenizer returns a 0-width tensor that defaults to
+        # float32, which then silently upcasts the whole rolling context to float via
+        # torch.cat in _update_rolling_state. Token ids must stay integral.
+        return next_obs_ids.long()
 
     def _update_rolling_state(self, rollings: DataProto, cur_responses: torch.Tensor, 
                             next_obs_ids: torch.Tensor) -> Dict:
@@ -189,10 +193,13 @@ class LLMGenerationManager:
             if action not in ('search', 'memory') or not content:
                 continue
             resp = responses_str[i]
-            start_char = resp.find(content)
-            if start_char == -1:
+            # Re-match (rather than resp.find(content)) to get the *tagged* occurrence's
+            # span specifically -- a model's <think> block restating its own query text
+            # verbatim would otherwise make .find() latch onto the wrong occurrence.
+            tag_match = re.search(r'<(search|memory|answer)>(.*?)</\1>', resp, re.DOTALL)
+            if not tag_match:
                 continue
-            end_char = start_char + len(content)
+            start_char, end_char = tag_match.span(2)
 
             offsets = self.tokenizer(resp, add_special_tokens=False, return_offsets_mapping=True)['offset_mapping']
             real_positions = (responses_ids[i] != pad_id).nonzero(as_tuple=True)[0]

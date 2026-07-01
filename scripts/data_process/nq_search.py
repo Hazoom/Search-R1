@@ -34,6 +34,14 @@ You must conduct reasoning inside <think> and </think> first every time you get 
 After reasoning, if you find you lack some knowledge, you can call a search engine by <search> query </search> and it will return the top searched results between <information> and </information>. \
 You can search as many times as your want. \
 If you find no further external knowledge needed, you can directly provide the answer inside <answer> and </answer>, without detailed illustrations. For example, <answer> Beijing </answer>. Question: {question}\n"""
+    elif template_type == 'se_search':
+        """Think-search-memorize workflow, following SE-Search (arXiv:2603.03293)."""
+        prefix = f"""You are a capable reasoning assistant, able to perform multiple search calls and memory purification to answer questions. \
+You must reason through the available information using <think> and </think>. \
+If you lack knowledge, you can call a search engine using <search> query </search> and it will return the top three results between <documents> and </documents>. \
+After each search, extract useful information from these documents and supplement or revise your memory between <memory> and </memory>. \
+You may send multiple search requests if needed. Do not repeat search queries. \
+Once you have sufficient information, provide a concise final answer using <answer> and </answer>. For example, <answer> Donald Trump </answer>. Question: {question}\n"""
     else:
         raise NotImplementedError
     return prefix

@@ -161,6 +161,11 @@ algorithm:
   state_masking:
     start_state_marker: "<information>"
     end_state_marker: "</information>"
+  dense_reward:
+    enable: false
+    alpha: 0.1
+    gamma: 0.01
+    decay_steps: 150
 
 trainer:
   total_epochs: 30

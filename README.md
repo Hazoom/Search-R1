@@ -30,6 +30,8 @@
 <!-- It can be seen as an extension of <strong>DeepSeek-R1(-Zero)</strong> with interleaved search engine calling and an opensource RL training-based solution for <strong>OpenAI DeepResearch</strong>. -->
 Built upon [veRL](https://github.com/volcengine/verl), Search-R1 extends the ideas of **DeepSeek-R1(-Zero)** by incorporating interleaved search engine access and provides a fully open-source RL training pipeline. It serves as an alternative and open solution to **OpenAI DeepResearch**, enabling research and development in tool-augmented LLM reasoning.
 
+> **This fork.** This repository is a fork of [Search-R1](https://github.com/PeterGriffinJin/Search-R1) — everything above and below describes the original Search-R1 framework, which remains the core of this codebase. On top of it, this fork adds an **experimental, opt-in adaptation** of ideas from the [SE-Search](https://arxiv.org/abs/2603.03293) paper (memory purification, atomic query diversity, dense reward). It is **not** an implementation of SE-Search itself — see [SE-Search extension](#se-search-extension-experimental) for exactly what's included, what's simplified relative to the paper, and how to enable it.
+
 <!-- Through RL (rule-based outcome reward), the 3B **base** LLM (both Qwen2.5-3b-base and Llama3.2-3b-base) develops reasoning and search engine calling abilities all on its own. -->
 
 We support different RL methods (e.g., PPO, GRPO, reinforce), different LLMs (e.g., llama3, Qwen2.5, etc) and different search engines (e.g., local sparse/dense retrievers and online search engines).
@@ -59,6 +61,7 @@ Paper: [link1](https://arxiv.org/pdf/2503.09516), [link2](https://arxiv.org/abs/
 - [Use your own dataset](#use-your-own-dataset)
 - [Use your own search engine](#use-your-own-search-engine)
 - [Features](#features)
+- [SE-Search extension (experimental)](#se-search-extension-experimental)
 - [Ackowledge](#acknowledge)
 - [Citations](#citations)
 
@@ -217,6 +220,37 @@ You can refer to ```search_r1/search/retriever_server.py``` for an example of la
 - Support off-the-shelf neural rerankers. ✔️
 - Support different RL methods (e.g., PPO, GRPO, reinforce). ✔️
 - Support different LLMs (e.g., llama3, Qwen2.5, etc). ✔️
+
+## SE-Search extension (experimental)
+
+On top of the original Search-R1 agent loop described above, this fork adds an **opt-in, experimental adaptation** of three mechanisms from [SE-Search: Self-Evolving Search Agent via Memory and Dense Reward](https://arxiv.org/abs/2603.03293):
+
+- **A `memory` action.** Alongside `search`/`answer`, the model can distill retrieved documents into a persistent `<memory>` block. Once a search's raw `<information>` block has been memorized, it's dropped from the rolling context fed to future generation, instead of accumulating indefinitely.
+- **Atomic Query Counting** (`search_r1/llm_agent/atomic_query.py`) — discourages issuing near-duplicate search queries.
+- **A dense reward** (`verl/utils/reward_score/se_search.py`) combining answer F1, memory fidelity, query diversity, and format compliance, replacing Search-R1's single sparse exact-match reward.
+- **A weighted loss objective** — continuous per-token loss weighting (query/memory spans weighted separately) in place of Search-R1's binary retrieved-token masking.
+
+This is fully **opt-in and disabled by default** — existing training scripts, configs, and results are unaffected unless you turn it on:
+
+```bash
+# 1. Process data with the think/search/documents/memory/answer prompt template
+python scripts/data_process/nq_search.py --template_type se_search
+```
+
+`train_ppo.sh`/`train_grpo.sh` hardcode their Hydra overrides rather than forwarding extra CLI args, so enable the extension by adding a line to the config overrides in the script you're using, e.g. in `train_grpo.sh` alongside `max_turns=2 \`:
+
+```bash
+    algorithm.dense_reward.enable=true \
+```
+
+This turns on both the dense reward and, via the same flag, the weighted loss objective (see `ray_trainer.py`'s `_create_loss_mask`).
+
+**This is an adaptation, not a reproduction of the SE-Search paper.** Known simplifications:
+- The dense reward's search-count cap reuses Search-R1's existing `max_turns` (which counts every turn, not specifically search turns), rather than a dedicated max-search-turns hyperparameter.
+- If a trajectory chains multiple searches before ever memorizing, only the most recently searched document gets purified from context.
+- The paper's reported results have not been empirically reproduced — that requires full-scale GPU/retriever training beyond what's been validated here.
+
+Mechanism-level correctness (not the paper's empirical results) is covered by `tests/` — run with `python3 -m pytest tests/` (CPU-only, no GPU/retriever server required).
 
 ## Acknowledge
 

@@ -452,6 +452,8 @@ class RayPPOTrainer(object):
             no_think_rl=self.config.algorithm.no_think_rl,
             search_url = self.config.retriever.url,
             topk = self.config.retriever.topk,
+            alpha = self.config.algorithm.dense_reward.alpha,
+            gamma = self.config.algorithm.dense_reward.gamma,
         )
 
         # Agent config preparation
@@ -683,6 +685,8 @@ class RayPPOTrainer(object):
             no_think_rl=self.config.algorithm.no_think_rl,
             search_url = self.config.retriever.url,
             topk = self.config.retriever.topk,
+            alpha = self.config.algorithm.dense_reward.alpha,
+            gamma = self.config.algorithm.dense_reward.gamma,
         )
 
         generation_manager = LLMGenerationManager(
@@ -785,6 +789,8 @@ class RayPPOTrainer(object):
                             batch = batch.union(reward_tensor)
 
                         # we combine with rule-based rm
+                        if hasattr(self.reward_fn, 'set_step'):
+                            self.reward_fn.set_step(self.global_steps)
                         reward_tensor = self.reward_fn(batch)
                         batch.batch['token_level_scores'] = reward_tensor
 
@@ -855,8 +861,15 @@ class RayPPOTrainer(object):
         """Create loss mask for state tokens."""
         response_length = batch.batch['responses'].shape[-1]
         response_mask = batch.batch['attention_mask'][:, -response_length:]
-        
-        loss_mask = batch.batch['info_mask'][:, -response_length:]
+
+        # SE-Search's weighted objective (Eq. 6) uses a continuous per-token loss_weight
+        # (0.0 on retrieved documents, gamma on search-query text, alpha on memory text,
+        # 1.0 elsewhere) in place of the binary info_mask -- masked_mean/compute_policy_loss
+        # already treat this mask as a plain elementwise weight, so no other changes needed.
+        if self.config.algorithm.dense_reward.enable and 'loss_weight' in batch.batch:
+            loss_mask = batch.batch['loss_weight'][:, -response_length:]
+        else:
+            loss_mask = batch.batch['info_mask'][:, -response_length:]
         batch.batch['loss_mask'] = loss_mask
 
         metrics.update({

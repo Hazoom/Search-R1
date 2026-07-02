@@ -17,7 +17,8 @@ Note that we don't combine the main with ray_trainer as ray_trainer is used by o
 
 from verl import DataProto
 import torch
-from verl.utils.reward_score import qa_em
+import math
+from verl.utils.reward_score import qa_em, se_search
 from verl.trainer.ppo.ray_trainer import RayPPOTrainer
 import re
 import numpy as np
@@ -33,10 +34,24 @@ class RewardManager():
     """The reward manager.
     """
 
-    def __init__(self, tokenizer, num_examine, format_score=0.) -> None:
+    def __init__(self, tokenizer, num_examine, format_score=0., dense_reward_cfg=None) -> None:
         self.tokenizer = tokenizer
         self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
         self.format_score = format_score
+        # When set (see algorithm.dense_reward in ppo_trainer.yaml), scoring is delegated to
+        # se_search.compute_score_dense instead of the plain exact-match reward.
+        self.dense_reward_cfg = dense_reward_cfg
+        self.current_step = 0
+
+    def set_step(self, step: int) -> None:
+        """Updates the training step used for the dense reward's cosine query-weight decay (Eq. 13)."""
+        self.current_step = step
+
+    def _cosine_decay(self, step: int) -> float:
+        decay_steps = self.dense_reward_cfg['decay_steps']
+        if step >= decay_steps:
+            return 0.
+        return 0.5 * (math.cos(step / decay_steps * math.pi) + 1)
 
     def __call__(self, data: DataProto):
         """We will expand this function gradually based on the available datasets"""
@@ -70,12 +85,23 @@ class RewardManager():
             sequences_str = self.tokenizer.decode(sequences)
 
             ground_truth = data_item.non_tensor_batch['reward_model']['ground_truth']
-
-            # select rm_score
             data_source = data_item.non_tensor_batch['data_source']
-            compute_score_fn = _select_rm_score_fn(data_source)
 
-            score = compute_score_fn(solution_str=sequences_str, ground_truth=ground_truth, format_score=self.format_score)
+            if self.dense_reward_cfg is not None:
+                score = se_search.compute_score_dense(
+                    solution_str=sequences_str,
+                    ground_truth=ground_truth,
+                    search_queries=list(data_item.non_tensor_batch['search_queries']),
+                    memory_text=str(data_item.non_tensor_batch['memory_text']),
+                    format_violations=int(data_item.non_tensor_batch['format_violations']),
+                    max_turns=self.dense_reward_cfg['max_turns'],
+                    alpha=self.dense_reward_cfg['alpha'],
+                    gamma=self.dense_reward_cfg['gamma'],
+                    mu=self._cosine_decay(self.current_step),
+                )
+            else:
+                compute_score_fn = _select_rm_score_fn(data_source)
+                score = compute_score_fn(solution_str=sequences_str, ground_truth=ground_truth, format_score=self.format_score)
 
             reward_tensor[i, valid_response_length - 1] = score
             # all_scores.append(score)
@@ -180,10 +206,19 @@ def main_task(config):
         role_worker_mapping[Role.RewardModel] = ray.remote(RewardModelWorker)
         mapping[Role.RewardModel] = global_pool_id
 
-    reward_fn = RewardManager(tokenizer=tokenizer, num_examine=0)
+    dense_reward_cfg = None
+    if config.algorithm.dense_reward.enable:
+        dense_reward_cfg = {
+            'alpha': config.algorithm.dense_reward.alpha,
+            'gamma': config.algorithm.dense_reward.gamma,
+            'decay_steps': config.algorithm.dense_reward.decay_steps,
+            'max_turns': config.max_turns,
+        }
+
+    reward_fn = RewardManager(tokenizer=tokenizer, num_examine=0, dense_reward_cfg=dense_reward_cfg)
 
     # Note that we always use function-based RM for validation
-    val_reward_fn = RewardManager(tokenizer=tokenizer, num_examine=1)
+    val_reward_fn = RewardManager(tokenizer=tokenizer, num_examine=1, dense_reward_cfg=dense_reward_cfg)
 
     resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
     trainer = RayPPOTrainer(config=config,
